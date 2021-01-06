@@ -1,0 +1,1 @@
+CWFP pulse sequence
