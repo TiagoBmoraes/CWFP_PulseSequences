@@ -32,3 +32,7 @@ T. Monaretto, E.T. Montrazi, T.B. Moraes, A.A. Souza, C. Rondeau-Mouro, L.A. Col
 Using T1 as a direct detection dimension in two-dimensional time-domain NMR experiments using CWFP regime, 
 J. Magn. Reson. 311 (2020) 106666.80.	https://doi.org/10.1016/j.jmr.2019.106666
 
+====================
+If you have doubts or suggestions - please email:  tiagobuemoraes [a] gmail.com
+https://sites.google.com/view/tiagomoraes
+
