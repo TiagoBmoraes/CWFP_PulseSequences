@@ -1,0 +1,412 @@
+------------------------------------------------------------------
+CPMG-CWFP-T1  pulse sequence 	(dez/2020)
+Tatina Monaretto   (tatiana.monaretto@gmail.com)
+Luiz Alberto Colnago  (luiz.colnago@embrapa.br)
+Embrapa Instrumentação, São Carlos/SP, Brazil				
+------------------------------------------------------------------
+
+program setup();
+
+#-------------Get main parameter from parameter Table------------#
+
+par; 
+  scans(16);
+  dummy_shots(0);
+  rd(0.300000000);
+  gain(59);
+  det_mode("complex");
+  magn_mode	( "PSD" );
+endpar;
+return(TRUE);
+
+
+
+
+#----------------------Set application configuration table------------------------#
+
+program config();
+
+int temp_int;
+real temp_real;
+char temp_string[128];
+
+
+strcpy( temp_string, get_text(CALIBRATION_FILE,"fname" ));
+if(ERROR) set_conf (CI_INPUT,TRUE,"File Name","F:\usuarios\Brucker\Sequencias");
+else set_conf (CI_INPUT,TRUE,"File Name",temp_string); endif;
+
+temp_real = get_real(CALIBRATION_FILE,"nexp");
+if(ERROR) set_conf (CI_INPUT,TRUE,"nexp CPMG: ","1");
+else set_conf (CI_INPUT,TRUE,"nexp CPMG",temp_int); endif;
+
+temp_real = get_real(CALIBRATION_FILE,"taucwfp");
+if(ERROR) set_conf (CI_INPUT,TRUE,"tau CWFP [ms]: ","2");
+else set_conf (CI_INPUT,TRUE,"tau CWFP [ms]",temp_real); endif;
+
+temp_real = get_real(CALIBRATION_FILE,"tauCPMG");
+if(ERROR) set_conf (CI_INPUT,TRUE,"tau CPMG [ms]: ","3");
+else set_conf (CI_INPUT,TRUE,"tau CPMG [ms]",temp_real); endif;
+
+temp_int = get_int(CALIBRATION_FILE,"mpi");
+if(ERROR) set_conf (CI_INPUT,TRUE,"Number of CWFP echos","4");
+else set_conf (CI_INPUT,TRUE,"Number of CWFP echos",temp_int); endif;
+
+temp_int = get_int(CALIBRATION_FILE,"ecoi");
+if(ERROR) set_conf (CI_INPUT,TRUE,"Number i of CPMG echoes","5");
+else set_conf (CI_INPUT,TRUE,"Number i of CPMG echoes",temp_int); endif;
+
+temp_int = get_int(CALIBRATION_FILE,"ecof");
+if(ERROR) set_conf (CI_INPUT,TRUE,"Number f of CPMG echoes","6");
+else set_conf (CI_INPUT,TRUE,"Number f of CPMG echoes",temp_int); endif;
+
+temp_real = get_real(CALIBRATION_FILE,"acq");
+if(ERROR) set_conf (CI_INPUT,TRUE,"Acquisition time [ms]","7");
+else set_conf (CI_INPUT,TRUE,"Acquisition time [ms]",temp_real); 
+endif;
+
+temp_int = get_int(CALIBRATION_FILE,"savefid");
+if(ERROR) set_conf (CI_SELECT,TRUE,"Save Signal",FALSE);
+else if(temp_int==1) set_conf(CI_SELECT,TRUE,"Save Signal",TRUE); 
+	else set_conf(CI_SELECT,TRUE,"Save Signal",FALSE); endif;
+endif;
+
+
+set_conf (CI_TEXT,TRUE,"File Name and Delays");
+get_conf ("Options","FID/ECHO aquisition",0);
+if (ESC) goto escape; endif;
+
+print_line (CALIBRATION_FILE,"fname", tst_conf (CI_INPUT,0));
+print_line (CALIBRATION_FILE,"nexp", ator ( tst_conf (CI_INPUT,1)));
+print_line (CALIBRATION_FILE,"tauCWFP", ator ( tst_conf (CI_INPUT,2)));
+print_line (CALIBRATION_FILE,"tauCPMG", ator ( tst_conf (CI_INPUT,3)));
+print_line (CALIBRATION_FILE,"mpi", atoi (tst_conf (CI_INPUT,4)));
+print_line (CALIBRATION_FILE,"echoi", atoi (tst_conf (CI_INPUT,5)));
+print_line (CALIBRATION_FILE,"echof", atoi (tst_conf (CI_INPUT,6)));
+print_line (CALIBRATION_FILE,"acq", ator ( tst_conf (CI_INPUT,7)));
+print_line (CALIBRATION_FILE,"savefid", tst_conf (CI_SELECT,0));
+
+
+label escape;
+
+return(TRUE);
+
+program measure();
+
+#----variable declaration----#
+
+int tdFid,grpDly,td,dispGrpDly,decim, asdshift, nexp;  #---int parameters for digital filter adjustement---#
+real dw,aqFid,swh,toffset,tauCWFP,tauCPMG, d1, gainr, tinv, tinv1,tinv2, waittime;          #---real parameters for digital filter adjustement---#
+int  ns,echoi,echof, phCPMG[32],phCPMG1[40], phCWFP[32], phCWFP1[32], phCWFP2[32], phrcCWFPCWFP[32], phrcCWFP1[32], mpi, cnt, nsc;
+real pw10,p90,p180,acq,rdt,att10,no,durtot,durhr,durmin,dursec,recdelay,fidinttrunc,rest,roundrest,total_time,save_flag, flag_cpcwfp;
+real x_array[3204800], yre_array[3204800], yim_array[3204800];
+char name[256],name1[256];
+
+
+#----get parameter from configuration table----#
+
+p90=get("90P");
+p180=get("18P");
+d1 =  get_rd;
+print_line(RESULTBOX, "aqFid =  ", aqFid, " ms. " );	
+acq = get_real(CALIBRATION_FILE,"acq");
+nexp = get_int(CALIBRATION_FILE,"nexp");
+echoi = get_int(CALIBRATION_FILE,"echoi");
+echof = get_int(CALIBRATION_FILE,"echof");
+tauCWFP = get_real(CALIBRATION_FILE,"tauCWFP");
+tauCPMG = get_real(CALIBRATION_FILE,"tauCPMG");
+rdt=get("RDT");
+mpi = get_int(CALIBRATION_FILE,"mpi");
+ns = get_scans;
+recdelay = get_rd;
+strcpy ( name, get_text(CALIBRATION_FILE,"fname" ));
+save_flag = get_int(CALIBRATION_FILE,"savefid");
+print_line(RESULTBOX);
+print_line(RESULTBOX,"----FID/Echo Acquisition----");
+print_line(RESULTBOX,"General data filename: ",name);
+
+
+#------------------Compatibility check-V8.0-Rev0-FW320-------------#
+int compat,appv;
+char comp_message1[500];
+appv=8;
+compat=isCompat(appv); 
+
+strcpy(comp_message1,"WARNING - Incompatibility detected! Versions expected: Firmware 3.2, FPGA V1BA, the minispec Software V3.00, Application Pool V8.");
+strcat(comp_message1,"Please check the configurations of your system in <Help>/<About the minispec>. Results might be invalid - Ignore?");
+
+if (compat == 0)
+	print_line(CONFIRMBOX,comp_message1);
+    	if (ESC) goto end;
+        else
+            print_line(RESULTBOX,"---------------------------------------------------------------------------------");  
+            print_line(RESULTBOX,"                     WARNING - Incompatibility detected!" );  
+	        print_line(RESULTBOX,"Versions expected: Firmware 3.2, FPGA V1BA, the minispec Software V3.00, Application Pool V8" );  
+			print_line(RESULTBOX,"Please check the configurations of your system in <Help>/<About the minispec>. ");
+			print_line(RESULTBOX,"                         Results might be invalid.");
+            print_line(RESULTBOX,"---------------------------------------------------------------------------------"); 
+        endif; 
+endif;
+#---------------END-Compatibility check----------------------------#
+
+
+
+
+
+#-----------Customize your filter settings?------------# #V7.0#
+decim = 8; #digital bandwidth of the filter is 12500kHz/decim, decim=2^N # 
+#------------------------------------------------------#
+
+#----------V7.0-FW-3-1-0------# #Group Delay table#
+	if (decim==1)		grpDly=35; endif;
+	if (decim==2)		grpDly=18; endif;
+	if (decim==4)		grpDly=22; endif;
+	if (decim==8)		grpDly=17; endif;
+	if (decim==16)		grpDly=17; endif;
+	if (decim==32)		grpDly=14; endif;
+	if (decim==64)		grpDly=14; endif;
+	if (decim==128)		grpDly=13; endif;
+	if (decim==256)		grpDly=13; endif;
+	if (decim==512)		grpDly=12; endif;
+	if (decim==1024)	grpDly=12; endif;
+	if (decim==2048)	grpDly=12; endif;
+	if (decim==4096)	grpDly=11; endif;
+#------END-V7.0-FW-3-1-0------#
+
+
+
+
+
+#---Defining the dwell time and the digital bandwidht and recalculating the acquisition time to match the digitalization rate---#
+swh=12500000/decim;
+dw=1/swh;
+aqFid=acq/1000;
+tdFid=trunc(aqFid/dw);
+tdFid=tdFid+grpDly; # litle trick to keep the acquisition with always the same duration regarless the decim selected #
+aqFid=tdFid*dw;
+asdshift=grpDly;
+
+par;
+dbw(swh/1000);
+endpar;
+
+
+
+
+#-----------------------------phase CWFP-T1-------------------------------------# 
+
+
+phCWFP[0]  = 0;     phCWFP1 [0] =0;        phCWFP2 [0]=180;   phrcCWFPCWFP[0] = 0;    phrcCWFP1[0] = 180;   
+phCWFP[1]  = 180;   phCWFP1 [1] =0;	    phCWFP2 [1]=180;   phrcCWFPCWFP[1] = 180; phrcCWFP1[1] = 0;
+phCWFP[2]  = 180;   phCWFP1 [2] =0;	    phCWFP2 [2]=180;   phrcCWFP[2] = 0;       phrcCWFP1[2] = 180;
+phCWFP[3]  = 0;     phCWFP1 [3] =0;	    phCWFP2 [3]=180;   phrcCWFP[3] = 180;     phrcCWFP1[3] = 0;
+
+phCWFP[4]  = 180;   phCWFP1 [4] = 180;	    phCWFP2 [4]=0;     phrcCWFP[4] = 0;     phrcCWFP1[4] = 180;   
+phCWFP[5]  = 0;     phCWFP1 [5] = 180;	    phCWFP2 [5]=0;     phrcCWFP[5] = 180;   phrcCWFP1[5] = 0;
+phCWFP[6]  = 0;     phCWFP1 [6] = 180;	    phCWFP2 [6]=0;     phrcCWFP[6] = 0;     phrcCWFP1[6] = 180;
+phCWFP[7]  = 180;   phCWFP1 [7] = 180;	    phCWFP2 [7]=0;     phrcCWFP[7] = 180;   phrcCWFP1[7] = 0;
+
+phCWFP[8]  = 180;   phCWFP1 [8] = 0;	    phCWFP2 [8]=180;   phrcCWFP[8] = 0;      phrcCWFP1[8] = 180;   
+phCWFP[9]  = 0;     phCWFP1 [9] = 0;	    phCWFP2 [9]=180;   phrcCWFP[9] = 180;    phrcCWFP1[9] = 0;
+phCWFP[10] = 0;     phCWFP1 [10] =0;        phCWFP2 [10]=180;  phrcCWFP[10] = 0;     phrcCWFP1[10] = 180;
+phCWFP[11] = 180;   phCWFP1 [11] = 0;       phCWFP2 [11]=180;  phrcCWFP[11] = 180;   phrcCWFP1[11] = 0;
+ 
+phCWFP[12]  = 0;      phCWFP1 [12] = 180;   phCWFP2 [12]=0;   phrcCWFP[12] = 0;      phrcCWFP1[12] = 180;   
+phCWFP[13]  = 180;    phCWFP1 [13] = 180;   phCWFP2 [13]=0;   phrcCWFP[13] = 180;    phrcCWFP1[13] = 0;
+phCWFP[14]  = 180;    phCWFP1 [14] = 180;   phCWFP2 [14]=0;   phrcCWFP[14] =0;       phrcCWFP1[14] = 180;
+phCWFP[15]  = 0;      phCWFP1 [15] = 180;   phCWFP2 [15]=0;   phrcCWFP[15] = 180;    phrcCWFP1[15] = 0;
+
+ 
+phCWFP[16]  = 90;    phCWFP1 [16] =90;      phCWFP2 [16]=270;   phrcCWFP[16] = 90;   phrcCWFP1[16] = 270;   
+phCWFP[17]  = 270;   phCWFP1 [17] =90;	    phCWFP2 [17]=270;   phrcCWFP[17] = 270;  phrcCWFP1[17] = 90;
+phCWFP[18]  = 270;   phCWFP1 [18] =90;	    phCWFP2 [18]=270;   phrcCWFP[18] = 90;   phrcCWFP1[18] = 270;
+phCWFP[19]  = 90;    phCWFP1 [19] =90;	    phCWFP2 [19]=270;   phrcCWFP[19] = 270;  phrcCWFP1[19] = 90;
+
+phCWFP[20]  = 270;   phCWFP1 [20] = 270;    phCWFP2 [20]=90;    phrcCWFP[20] = 90;   phrcCWFP1[20] = 270;   
+phCWFP[21]  = 90;    phCWFP1 [21] = 270;    phCWFP2 [21]=90;    phrcCWFP[21] = 270;  phrcCWFP1[21] = 90;
+phCWFP[22]  = 90;    phCWFP1 [22] = 270;    phCWFP2 [22]=90;    phrcCWFP[22] = 90;   phrcCWFP1[22] = 270;
+phCWFP[23]  = 270;   phCWFP1 [23] = 270;    phCWFP2 [23]=90;    phrcCWFP[23] = 270;  phrcCWFP1[23] = 90;
+
+phCWFP[24]  = 270;  phCWFP1 [24] = 90;    phCWFP2 [24]=270;    phrcCWFP[24] = 90;    phrcCWFP1[24] = 270;   
+phCWFP[25]  = 90;   phCWFP1 [25] = 90;    phCWFP2 [25]=270;    phrcCWFP[25] = 270;   phrcCWFP1[25] = 90;
+phCWFP[26]  = 90;   phCWFP1 [26] = 90;    phCWFP2 [26]=270;    phrcCWFP[26] = 90;    phrcCWFP1[26] = 270;
+phCWFP[27]  = 270;  phCWFP1 [27] = 90;    phCWFP2 [27]=270;    phrcCWFP[27] = 270;   phrcCWFP1[27] = 90;
+ 
+phCWFP[28]  = 90;    phCWFP1 [28] = 270;   phCWFP2 [28]=90;    phrcCWFP[28] = 90;     phrcCWFP1[28] = 270;   
+phCWFP[29]  = 270;   phCWFP1 [29] = 270;   phCWFP2 [29]=90;    phrcCWFP[29] = 270;    phrcCWFP1[29] = 90;
+phCWFP[30]  = 270;   phCWFP1 [30] = 270;   phCWFP2 [30]=90;    phrcCWFP[30] = 90;     phrcCWFP1[30] = 270;
+phCWFP[31]  = 90;    phCWFP1 [31] = 270;   phCWFP2 [31]=90;    phrcCWFP[31] = 270;    phrcCWFP1[31] = 90;
+
+phCWFP[32] = REDO;   phCWFP1 [32] = REDO;  phCWFP2[32]=REDO;   phrcCWFP[32] = REDO;   phrcCWFP1[32] = REDO;
+
+
+#---------------------phase CPMG--------------------#
+
+phCPMG[0]=0;	 phCPMG1[0]= 90;	  
+phCPMG[1]=0;	 phCPMG1[1]= 90;	  
+phCPMG[2]=180;	 phCPMG1[2]= 90;	 
+phCPMG[3]=180;	 phCPMG1[3]= 90;     
+
+phCPMG[4]=0;	 phCPMG1[4]= 270;	 	
+phCPMG[5]=0;	 phCPMG1[5]= 270;	      
+phCPMG[6]=180;	 phCPMG1[6]= 270;     
+phCPMG[7]=180;	 phCPMG1[7]= 270;  
+
+phCPMG[8]=180;	 phCPMG1[8]= 90;	  
+phCPMG[9]=180;	 phCPMG1[9]= 90;	  
+phCPMG[10]=0;	 phCPMG1[10]= 90;	 
+phCPMG[11]=0;	 phCPMG1[11]= 90;     
+
+phCPMG[12]=180;	 phCPMG1[12]= 270;	 	
+phCPMG[13]=180;	 phCPMG1[13]= 270;	      
+phCPMG[14]=0;	 phCPMG1[14]= 270;     
+phCPMG[15]=0;	 phCPMG1[15]= 270;
+
+phCPMG[16]=90;	 phCPMG1[16]= 0;	  
+phCPMG[17]=90;	 phCPMG1[17]= 0;	  
+phCPMG[18]=270;	 phCPMG1[18]= 0;	 
+phCPMG[19]=270;	 phCPMG1[19]= 0;     
+
+phCPMG[20]=90;	 phCPMG1[20]= 180;	 	
+phCPMG[21]=90;	 phCPMG1[21]= 180;	      
+phCPMG[22]=270;	 phCPMG1[22]= 180;     
+phCPMG[23]=270;	 phCPMG1[23]= 180;
+
+
+phCPMG[24]=270;	 phCPMG1[24]= 0;	  
+phCPMG[25]=270;	 phCPMG1[25]= 0;	  
+phCPMG[26]=90;	 phCPMG1[26]= 0;	 
+phCPMG[27]=90;	 phCPMG1[27]= 0;     
+
+
+phCPMG[28]=270;	 phCPMG1[28]= 180;	 	
+phCPMG[29]=270;	 phCPMG1[29]= 180;	      
+phCPMG[30]=90;	 phCPMG1[30]= 180;     
+phCPMG[31]=90;	 phCPMG1[31]= 180;
+
+phCPMG[32]= REDO; phCPMG1[32]=REDO;         
+
+
+
+
+
+
+#-------------------Pulse sequence---------------------------------------------------#
+
+
+#-------------CPMG Loop-------------#
+cnt=1;
+while ( cnt <= nexp+1 )
+
+if (cnt == 0)
+	tinv=5e-3;
+
+else
+	tinv2= ln(echoi) + ((cnt-1)*(ln(echof)-ln(echoi)))/nexp;
+	tinv1 = (exp(tinv2));
+        tinv= round(tinv1);
+
+endif;
+
+pulses;
+
+#---------------CPMG sequence --------------------#      
+
+        ssp (p90, phCPMG);
+        sd ((tauCPMG/2)-p90/2000);
+
+
+        ploop (tinv);
+        ssp (p180,phCPMG1);
+        sd (tauCPMG/2 + 1000*asdshift*dw-aqFid*500 - p180/2000);
+        sd(aqFid*1000);
+        sd (tauCPMG/2 - 1000*asdshift*dw-aqFid*500 - p180/2000);
+
+endploop;
+
+ssp (p180,phCPMG1);
+sd (tauCPMG/2+ 1000*asdshift*dw-aqFid*500 - p180/2000);
+
+#-----------------------CWFP-T1 sequence -------------------------#   
+
+cta;
+
+ssp (p90, phCWFP);
+
+
+sd ((tauCWFP/2)-p90/2000);
+
+
+ploop  ((mpi+1)/2);
+        ssp (p90/10,phCWFP1);
+        sd ((tauCWFP/2) - p90/20000- aqFid*500+1000*asdshift*dw); 
+        adi(aqFid*1000, 1, phrcCWFP);
+        sd ((taucwfp/2) - p90/20000-aqFid*500-1000*asdshift*dw);
+        ssp (p90/10,phCWFP2);
+        sd ((taucwfp/2) - p90/20000- aqFid*500+1000*asdshift*dw); 
+        adi(aqFid*1000, 1, phrcCWFP1);
+        sd ((taucwfp/2) - p90/20000-aqFid*500-1000*asdshift*dw);
+
+endploop;
+
+    print_line( RESULTBOX, "------------------------" );
+	print_line( RESULTBOX, "tauCWFP = ",  tauCWFP," ms");
+	print_line( RESULTBOX, "Number of CPMG experiments = nexp",  );
+        print_line( RESULTBOX, "Number f of CPMG echoes = echof",  );
+        print_line( RESULTBOX, "Number i of CPMG echoes = echoi",  );
+	print_line( RESULTBOX, "recycle delay = d1",  ," s");
+        print_line( RESULTBOX, "number of CWFP echoes = mpi",  );
+        print_line(RESULTLINE, "tinv=  ",tinv);
+
+endpulses;
+
+
+
+
+#--------------------- Data pre-processing ------------------------------#
+toffset=1000*grpDly*dw; #----temporal offset due to group delay----#
+sig_offset(-toffset); #----setting the temporal axis at the center of the excitation pulse----#
+range(toffset,rdt+1000*(aqFid-dw)-toffset,FALSE);
+if(cnt==1)
+           
+          ph0corr(toffset,1000*(tdFid*1000-grpDly-1)*dw,0,ON);
+
+            endif; 
+
+measure;
+
+
+
+#-------------------Saving FIDs ---------------------------------------#
+    
+if (save_flag == 1)
+              
+	no = data_points(0, -1 )-1; 
+	sig_abscissa(0, -1, x_array );     
+	sig_ordinate(0, -1, yre_array );   
+    sig_swap;
+	sig_abscissa(0, -1, x_array );     
+	sig_ordinate(0, -1, yim_array );   
+    sig_swap;
+	#replace_signal(x_array,yre_array,no);		 
+	replace_signal(x_array,yim_array,no);#			
+    strcpy(name1, name);
+    strcat(name1, ".dat");
+    file_name(ASCII_FILE, name1 );
+    print_table( ASCII_FILE, x_array, yre_array,yim_array,no);  
+	print_line( RESULTBOX, "------------------------" );
+    print_line( RESULTBOX, "Output file:" );
+    print_line( RESULTBOX, name1);
+    
+endif;
+
+
+ cnt=cnt+1;
+
+if (cnt<nexp) wait_seconds (waittime); endif	
+
+endwhile;
+
+if ( ESC ) print_line( CONFIRMBOX, "USER INTERRUPT !" ); return( FALSE ); endif;
+label end;
+beep;beep;
+return( TRUE );
