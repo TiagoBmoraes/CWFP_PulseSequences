@@ -1,0 +1,264 @@
+---------------------------------------------------------------------------------
+CWFP-T1 pulse sequence		(dez/2020)
+Tatina Monaretto   (tatiana.monaretto@gmail.com)
+Luiz Alberto Colnago  (luiz.colnago@embrapa.br)
+Embrapa Instrumentação, São Carlos/SP, Brazil
+---------------------------------------------------------------------------------
+program setup();
+
+
+#----------------------Get main parameter from parameter table------------------------#
+
+
+
+par; 
+  scans(16);
+  dummy_shots(0);
+  rd(5.000000000);
+  gain(54);
+  det_mode("complex");
+  magn_mode	( "PSD" );
+endpar;
+return(TRUE);
+
+
+
+#----------------------Set application configuration table------------------------#
+
+program config();
+
+int temp_int;
+real temp_real;
+char temp_string[128];
+
+
+
+strcpy( temp_string, get_text(CALIBRATION_FILE,"fname" ));
+if(ERROR) set_conf (CI_INPUT,TRUE,"File Name","F:\usuarios\Brucker\Sequencias");
+else set_conf (CI_INPUT,TRUE,"File Name",temp_string); endif;
+
+temp_real = get_real(CALIBRATION_FILE,"tau");
+if(ERROR) set_conf (CI_INPUT,TRUE,"tau [ms]: ","1");
+else set_conf (CI_INPUT,TRUE,"tau [ms]",temp_real); endif;
+
+temp_int = get_int(CALIBRATION_FILE,"npi");
+if(ERROR) set_conf (CI_INPUT,TRUE,"Number of small angle pulses in CWFP","2");
+else set_conf (CI_INPUT,TRUE,"Number of small angle pulses in CWFP",temp_int); endif;
+
+temp_int = get_int(CALIBRATION_FILE,"savefid");
+if(ERROR) set_conf (CI_SELECT,TRUE,"Save Signal",FALSE);
+else if(temp_int==1) set_conf(CI_SELECT,TRUE,"Save Signal",TRUE); 
+	else set_conf(CI_SELECT,TRUE,"Save Signal",FALSE); endif;
+endif;
+
+temp_real = get_real(CALIBRATION_FILE,"acq");
+if(ERROR) set_conf (CI_INPUT,TRUE,"Acquisition time [ms]","3");
+else set_conf (CI_INPUT,TRUE,"Acquisition time [ms]",temp_real); 
+endif;
+
+
+set_conf (CI_TEXT,TRUE,"File Name and Delays");
+get_conf ("Options","FID/ECHO aquisition",0);
+if (ESC) goto escape; endif;
+
+print_line (CALIBRATION_FILE,"fname", tst_conf (CI_INPUT,0));
+print_line (CALIBRATION_FILE,"tau", ator ( tst_conf (CI_INPUT,1)));
+print_line (CALIBRATION_FILE,"npi", atoi (tst_conf (CI_INPUT,2)));
+print_line (CALIBRATION_FILE,"acq", ator ( tst_conf (CI_INPUT,3)));
+print_line (CALIBRATION_FILE,"savefid", tst_conf (CI_SELECT,0));
+
+label escape;
+
+return(TRUE);
+
+
+
+program measure();
+
+#----variable declaration----#
+
+int tdFid,grpDly,td,dispGrpDly,decim, asdshift;  #---int parameters for digital filter adjustement---#
+real dw,aqFid,swh,toffset,tau,d1, gainr;          #---real parameters for digital filter adjustement---#
+int phCWFP[32],phCWFP[32], phCWFP1[32], phrcCWFP[32], phrcCWFP1[32],ns, npi, cnt, nsc;
+real p90,p180,acq,rdt,attenrose,no,durtot,durhr,durmin,dursec,recdelay,fidinttrunc,rest,roundrest,total_time,save_flag, flag_cpcwfp;
+real x_array[3204800], yre_array[3204800], yim_array[3204800];
+char name[256],name1[256];
+
+
+#----get parameter from configuration table----#
+
+p90=get("90P");
+p180 = get("18P");
+d1 =  get_rd;
+print_line(RESULTBOX, "aqFid =  ", aqFid, " ms. " );	
+acq = get_real(CALIBRATION_FILE,"acq");
+tau = get_real(CALIBRATION_FILE,"tau");
+rdt=get("RDT");
+npi = get_int(CALIBRATION_FILE,"npi");
+npi = trunc(npi);
+strcpy ( name, get_text(CALIBRATION_FILE,"fname" ));
+save_flag = get_int(CALIBRATION_FILE,"savefid");
+print_line(RESULTBOX);
+print_line(RESULTBOX,"----FID/Echo Acquisition----");
+print_line(RESULTBOX,"General data filename: ",name);
+
+
+#------------------Compatibility check-V8.0-Rev0-FW320-------------#
+int compat,appv;
+char comp_message1[500];
+appv=8;
+compat=isCompat(appv); 
+
+strcpy(comp_message1,"WARNING - Incompatibility detected! Versions expected: Firmware 3.2, FPGA V1BA, the minispec Software V3.00, Application Pool V8.");
+strcat(comp_message1,"Please check the configurations of your system in <Help>/<About the minispec>. Results might be invalid - Ignore?");
+
+if (compat == 0)
+	print_line(CONFIRMBOX,comp_message1);
+    	if (ESC) goto end;
+        else
+            print_line(RESULTBOX,"---------------------------------------------------------------------------------");  
+            print_line(RESULTBOX,"                     WARNING - Incompatibility detected!" );  
+	        print_line(RESULTBOX,"Versions expected: Firmware 3.2, FPGA V1BA, the minispec Software V3.00, Application Pool V8" );  
+			print_line(RESULTBOX,"Please check the configurations of your system in <Help>/<About the minispec>. ");
+			print_line(RESULTBOX,"                         Results might be invalid.");
+            print_line(RESULTBOX,"---------------------------------------------------------------------------------"); 
+        endif; 
+endif;
+#---------------END-Compatibility check----------------------------#
+
+
+
+
+
+#-----------Customize your filter settings?------------# #V7.0#
+decim = 8; #digital bandwidth of the filter is 12500kHz/decim, decim=2^N # 
+#------------------------------------------------------#
+
+
+#----------V7.0-FW-3-1-0------# #Group Delay table#
+	if (decim==1)		grpDly=35; endif;
+	if (decim==2)		grpDly=18; endif;
+	if (decim==4)		grpDly=22; endif;
+	if (decim==8)		grpDly=17; endif;
+	if (decim==16)		grpDly=17; endif;
+	if (decim==32)		grpDly=14; endif;
+	if (decim==64)		grpDly=14; endif;
+	if (decim==128)		grpDly=13; endif;
+	if (decim==256)		grpDly=13; endif;
+	if (decim==512)		grpDly=12; endif;
+	if (decim==1024)	grpDly=12; endif;
+	if (decim==2048)	grpDly=12; endif;
+	if (decim==4096)	grpDly=11; endif;
+#------END-V7.0-FW-3-1-0------#
+
+
+
+
+#---Defining the dwell time and the digital bandwidht and recalculating the acquisition time to match the digitalization rate---#
+swh=12500000/decim;
+dw=1/swh;
+aqFid=acq/1000;
+tdFid=trunc(aqFid/dw);
+tdFid=tdFid+grpDly; # litle trick to keep the acquisition with always the same duration regarless the decim selected #
+aqFid=tdFid*dw;
+asdshift=grpDly;
+par;
+dbw(swh/1000);
+endpar;
+
+
+
+#-------------------  phase cycling --------------------------------------------------------------#
+ 
+phCWFP[0]  = 0;     phCWFP1 [0] =0;	    phCWFP2 [0]=180;   phrcCWFP1[0] = 0;        phrcCWFP[0] = 180;   
+phCWFP[1]  = 0;     phCWFP1 [1] =180;	    phCWFP2 [1]=0;     phrcCWFP1[1] = 180;      phrcCWFP[1] = 0;
+phCWFP[2]  = 180;   phCWFP1 [2] =0;	    phCWFP2 [2]=180;   phrcCWFP1[2] = 0; 	phrcCWFP[2] = 180;
+phCWFP[3]  = 180;   phCWFP1 [3] =180;	    phCWFP2 [3]=0;     phrcCWFP1[3] = 180;	phrcCWFP[3] = 0;
+
+phCWFP[4]  = 90;    phCWFP1 [4] = 90;	    phCWFP2 [4]=270;   phrcCWFP1[4] = 90;       phrcCWFP[4] = 270;   
+phCWFP[5]  = 90;    phCWFP1 [5] = 270;	    phCWFP2 [5]=90;    phrcCWFP1[5] = 270;	phrcCWFP[5] = 90;
+phCWFP[6]  = 270;   phCWFP1 [6] = 90;	    phCWFP2 [6]=270;   phrcCWFP1[6] = 90; 	phrcCWFP[6] = 270;
+phCWFP[7]  = 270;   phCWFP1 [7] = 270;	    phCWFP2 [7]=90;    phrcCWFP1[7] = 270;	phrcCWFP[7] = 90;
+
+phCWFP[8] = REDO;   phCWFP1 [8] = REDO;	    phCWFP2 [8]=REDO;  phrcCWFP1[8] = REDO;     phrcCWFP[8] = REDO;
+
+
+
+
+
+
+#----------------------Pulse sequence---------------------------------------#
+cnt = 0;
+
+pulses;
+cta;
+ ssp (p180,phCWFP);
+ sd ((tau/2)- p180/2000);     
+
+ploop  ((npi+1)/2);
+        ssp (p90/9,phCWFP1);
+        sd ((tau/2) - p90/18000- aqFid*500+1000*asdshift*dw); 
+        adi(aqFid*1000, 1, phrcCWFP);
+        sd ((tau/2) - p90/18000-aqFid*500-1000*asdshift*dw );
+        ssp (p90/9,phCWFP2);
+        sd ((tau/2) - p90/18000- aqFid*500+1000*asdshift*dw); 
+        adi(aqFid*1000, 1, phrcCWFP1);
+        sd ((tau/2) - p90/18000-aqFid*500-1000*asdshift*dw);
+
+
+endploop;
+        
+
+cnt=cnt+1; # loop counter #
+	print_line( RESULTBOX, "------------------------" );
+	print_line( RESULTBOX, "tau = ",  tau," ms");
+	print_line( RESULTBOX, "Recycle delay = ", d1 ," s");
+        print_line( RESULTBOX, "number of CWFP echoes = ",  npi);
+
+
+
+
+endpulses;
+
+
+
+
+#--------------------- Data pre-processing ------------------------------#
+toffset=1000*grpDly*dw; #----temporal offset due to group delay----#
+sig_offset(-toffset); #----setting the temporal axis at the center of the excitation pulse----#
+range(toffset,rdt+1000*(aqFid-dw)-toffset,FALSE);
+if(cnt==1)
+           
+            ph0corr(100000*grpDly*dw,100000*(tdFid*1000-grpDly-1)*dw,180,ON);
+            endif; 
+
+measure;
+
+
+
+
+
+#-------------------Saving FIDs ---------------------------------------#
+                  
+	no = data_points(rdt, -1 )-1; 
+	sig_abscissa(0, -1, x_array );     
+	sig_ordinate(0, -1, yre_array );   
+    sig_swap;
+	sig_abscissa(0, -1, x_array );     
+	sig_ordinate(0, -1, yim_array );   
+    sig_swap;
+	#replace_signal(x_array,yre_array,no);	#	 
+	#replace_signal(x_array,yim_array,no);	#		
+    strcpy(name1, name);
+    strcat(name1, ".dat");
+    file_name(ASCII_FILE, name1 );
+    print_table( ASCII_FILE, x_array, yre_array,yim_array,no);  
+	print_line( RESULTBOX, "------------------------" );
+    print_line( RESULTBOX, "Output file:" );
+    print_line( RESULTBOX, name1);
+
+
+if ( ESC ) print_line( CONFIRMBOX, "USER INTERRUPT !" ); return( FALSE ); endif;
+label end;
+beep;beep;
+return( TRUE );
